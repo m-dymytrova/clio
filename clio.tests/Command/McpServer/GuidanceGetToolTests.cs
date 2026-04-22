@@ -69,6 +69,42 @@ public sealed class GuidanceGetToolTests {
 
 	[Test]
 	[Category("Unit")]
+	[Description("Returns structured error with availableGuides when args omit the required name parameter")]
+	public void GuidanceGet_Should_Return_Structured_Error_On_Missing_Name() {
+		GuidanceGetTool tool = new();
+
+		GuidanceGetResponse result = tool.GetGuidance(new GuidanceGetArgs(null)).Result;
+
+		result.Success.Should().BeFalse();
+		result.Error.Should().Contain("Missing required parameter 'name'",
+			because: "calling without name should surface a clear structured error instead of throwing");
+		result.AvailableGuides.Should().NotBeNullOrEmpty(
+			because: "missing-name errors should still return the list of valid guides to unblock the caller");
+	}
+
+	[Test]
+	[Category("Unit")]
+	[Description("Legacy alias 'topic' is accepted as 'name' with a hint when ExtensionData carries the value")]
+	public void GuidanceGet_Should_Accept_Legacy_Alias_Topic() {
+		GuidanceGetTool tool = new();
+		var element = System.Text.Json.JsonDocument.Parse("\"page-schema-validators\"").RootElement;
+		GuidanceGetArgs args = new(null) {
+			ExtensionData = new System.Collections.Generic.Dictionary<string, System.Text.Json.JsonElement> {
+				["topic"] = element
+			}
+		};
+
+		GuidanceGetResponse result = tool.GetGuidance(args).Result;
+
+		result.Success.Should().BeTrue(
+			because: "legacy 'topic' alias should resolve to 'name' so the caller's first attempt succeeds");
+		result.Article!.Name.Should().Be("page-schema-validators");
+		result.Hint.Should().Contain("rename to 'name'",
+			because: "the hint should teach the caller the canonical field name");
+	}
+
+	[Test]
+	[Category("Unit")]
 	[Description("Returns an explicit error and the known guide names when the requested guidance name is unknown.")]
 	public void GuidanceGet_Should_Return_Known_Guide_Names_For_Unknown_Request() {
 		// Arrange

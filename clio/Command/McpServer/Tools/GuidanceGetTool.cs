@@ -1,7 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,36 +17,78 @@ public sealed class GuidanceGetTool {
 
 	internal const string ToolName = "get-guidance";
 
+	private static readonly Dictionary<string, string> LegacyAliases = new(StringComparer.Ordinal) {
+		["topic"] = "name",
+		["guide"] = "name",
+		["guideName"] = "name",
+		["guide-name"] = "name",
+		["article"] = "name",
+		["articleName"] = "name",
+		["guidanceName"] = "name"
+	};
+
 	[McpServerTool(Name = ToolName, ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
 	[Description("Returns a named clio MCP guidance article, or lists all available guide names when the requested name is unknown.")]
 	public Task<GuidanceGetResponse> GetGuidance(
 		[Description("Parameters: name (required).")]
 		[Required] GuidanceGetArgs args,
 		CancellationToken cancellationToken = default) {
-		if (GuidanceCatalog.Entries.TryGetValue(args.Name, out var article)) {
-			return Task.FromResult(new GuidanceGetResponse {
-				Success = true,
-				Article = new GuidanceArticle {
-					Name = args.Name,
-					Uri = article.Uri,
-					Text = article.Text
+		try {
+			string? effectiveName = args.Name;
+			string? aliasHint = null;
+			if (string.IsNullOrWhiteSpace(effectiveName) && args.ExtensionData is not null) {
+				foreach (string key in args.ExtensionData.Keys) {
+					if (LegacyAliases.ContainsKey(key)) {
+						JsonElement value = args.ExtensionData[key];
+						if (value.ValueKind == JsonValueKind.String) {
+							effectiveName = value.GetString();
+							aliasHint = $"Accepted '{key}' as 'name' (rename to 'name' in future calls).";
+							break;
+						}
+					}
 				}
+			}
+			if (string.IsNullOrWhiteSpace(effectiveName)) {
+				return Task.FromResult(new GuidanceGetResponse {
+					Success = false,
+					Error = "Missing required parameter 'name'. Pass {\"name\": \"<guide>\"}. See availableGuides for valid values.",
+					AvailableGuides = GuidanceCatalog.Entries.Keys.ToList()
+				});
+			}
+			if (GuidanceCatalog.Entries.TryGetValue(effectiveName, out var article)) {
+				return Task.FromResult(new GuidanceGetResponse {
+					Success = true,
+					Hint = aliasHint,
+					Article = new GuidanceArticle {
+						Name = effectiveName,
+						Uri = article.Uri,
+						Text = article.Text
+					}
+				});
+			}
+			return Task.FromResult(new GuidanceGetResponse {
+				Success = false,
+				Error = $"Unknown guidance '{effectiveName}'. Use one of availableGuides.",
+				AvailableGuides = GuidanceCatalog.Entries.Keys.ToList()
+			});
+		} catch (Exception ex) {
+			return Task.FromResult(new GuidanceGetResponse {
+				Success = false,
+				Error = $"get-guidance failed: {ex.Message}. Expected args: {{\"name\": \"<guide>\"}}.",
+				AvailableGuides = GuidanceCatalog.Entries.Keys.ToList()
 			});
 		}
-		return Task.FromResult(new GuidanceGetResponse {
-			Success = false,
-			Error = $"Unknown guidance '{args.Name}'. Use one of the listed names.",
-			AvailableGuides = GuidanceCatalog.Entries.Keys.ToList()
-		});
 	}
 }
 
 public sealed record GuidanceGetArgs(
 	[property: JsonPropertyName("name")]
 	[property: Description("Guidance article name. Use one of the names returned in 'availableGuides' when unknown.")]
-	[property: Required]
-	string Name
-);
+	string? Name = null
+) {
+	[JsonExtensionData]
+	public Dictionary<string, JsonElement>? ExtensionData { get; init; }
+}
 
 /// <summary>
 /// Response from the <c>get-guidance</c> MCP tool.
@@ -56,6 +100,10 @@ public sealed class GuidanceGetResponse {
 	[JsonPropertyName("error")]
 	[System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
 	public string? Error { get; init; }
+
+	[JsonPropertyName("hint")]
+	[System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+	public string? Hint { get; init; }
 
 	[JsonPropertyName("article")]
 	[System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
